@@ -5,6 +5,7 @@ from langchain_chroma import Chroma
 from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 from langgraph.prebuilt import create_react_agent
+import tiktoken
 
 # ─── Config ───────────────────────────────────────────────
 DB_PATH = "./db"
@@ -66,6 +67,21 @@ def list_files(query: str) -> str:
                 all_files.append(os.path.join(root, f))
     return "\n".join(all_files)
 
+
+# Use a compatible encoding (works well for most models)
+enc = tiktoken.get_encoding("cl100k_base")
+
+def count_tokens(text: str) -> int:
+    if not text:
+        return 0
+    return len(enc.encode(text))
+
+def count_message_tokens(messages):
+    total = 0
+    for msg in messages:
+        if hasattr(msg, "content") and msg.content:
+            total += count_tokens(msg.content)
+    return total
 
 # ─── Memory ───────────────────────────────────────────────
 def save_memory(chat_history):
@@ -148,6 +164,8 @@ You are an expert code assistant.
 
     while True:
         question = input("You: ").strip()
+        
+        input_tokens = count_tokens(question)
 
         if question.lower() == "exit":
             save_memory(chat_history)
@@ -190,32 +208,60 @@ After finishing:
 """),
                 HumanMessage(content=question)
             ]
+            
+            input_tokens += count_message_tokens(messages)
 
             response = llm.invoke(messages)
             final_answer = response.content
 
+            output_tokens = count_tokens(final_answer)
         # 🌍 GENERAL MODE
         elif not is_code_question(question):
             print("\n🧠 General answer...\n")
 
             messages = [
                 SystemMessage(content="""
-You are a helpful assistant.
+You are a knowledgeable and precise assistant.
 
-- Answer directly
-- Do NOT mention tools
+GOAL:
+Provide clear, structured, and accurate explanations of concepts.
+
+RULES:
+1. Always explain the underlying mechanism (not just definition).
+2. Use correct and realistic numbers. Avoid exaggeration.
+3. If unsure about a number, give an approximate range and say "approximately".
+4. Keep explanations structured using sections or bullet points.
+5. Be concise but complete — avoid unnecessary fluff.
+6. Do NOT mention tools, functions, or internal reasoning.
+7. Do NOT guess. If uncertain, say so clearly.
+
+FORMAT:
+- Start with a short definition
+- Then explain how it works step-by-step
+- Add key facts or numbers (if relevant)
+- End with a short summary (optional)
+
+STYLE:
+- Clear, technical but easy to understand
+- Avoid vague phrases like "very hot", "very large"
+- Prefer specific values and mechanisms
 """),
                 HumanMessage(content=question)
             ]
 
+            input_tokens += count_message_tokens(messages)
+            
             response = llm.invoke(messages)
             final_answer = response.content
+            
+            output_tokens = count_tokens(final_answer)
 
         # 🧑‍💻 CODE MODE (AGENT)
         else:
             print("\n── Agent Thinking ──────────────────────────\n")
 
             final_answer = ""
+            input_tokens += count_message_tokens(chat_history)
 
             for step in agent.stream(
                 {"messages": chat_history},
@@ -235,6 +281,7 @@ You are a helpful assistant.
 
                         elif hasattr(msg, "content") and msg.content:
                             final_answer = msg.content
+            output_tokens = count_tokens(final_answer)
 
         # Save + print
         chat_history.append(AIMessage(content=final_answer))
@@ -243,6 +290,14 @@ You are a helpful assistant.
         print("\n── Final Answer ────────────────────────────\n")
         print(final_answer)
         print("\n" + "=" * 50 + "\n")
+        
+        total_tokens = input_tokens + output_tokens
+
+        print("\n🧮 Token Usage ─────────────────────────────")
+        print(f"Input Tokens : {input_tokens}")
+        print(f"Output Tokens: {output_tokens}")
+        print(f"Total Tokens : {total_tokens}")
+        print("────────────────────────────────────────────")
 
 
 if __name__ == "__main__":
